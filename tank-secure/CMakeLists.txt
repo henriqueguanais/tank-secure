@@ -35,7 +35,8 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(tank-secure tank-secure.c lib/rfid/mfrc522.c lib/buzzer/buzzer.c lib/oled/ssd1306_i2c.c)
+add_executable(tank-secure tank-secure.c lib/rfid/mfrc522.c lib/buzzer/buzzer.c 
+                lib/oled/ssd1306_i2c.c lib/thingspeak/thingspeak.c)
 
 pico_set_program_name(tank-secure "tank-secure")
 pico_set_program_version(tank-secure "0.1")
@@ -60,12 +61,15 @@ target_link_libraries(tank-secure
         hardware_pwm
         hardware_clocks
         hardware_i2c
+        hardware_rtc
+        hardware_adc
         )
 
 target_include_directories(tank-secure PUBLIC
         lib/rfid    
         lib/buzzer
         lib/oled
+        lib/thingspeak
         )
 
 pico_add_extra_outputs(tank-secure)

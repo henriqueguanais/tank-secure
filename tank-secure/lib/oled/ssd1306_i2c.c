@@ -243,7 +243,7 @@ void ssd1306_draw_bitmap(ssd1306_t *ssd, const uint8_t *bitmap) {
 
 
 // Inicializa o display OLED
-void init_display(uint8_t *ssd, struct render_area *frame_area) {
+void init_display(uint8_t *ssd, struct render_area *frame_area, bool custom_area) {
     // Inicialização do i2c
     i2c_init(i2c1, ssd1306_i2c_clock * 1000);
     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
@@ -254,14 +254,17 @@ void init_display(uint8_t *ssd, struct render_area *frame_area) {
     // Processo de inicialização completo do OLED SSD1306
     ssd1306_init();
 
-    // Preparar área de renderização para o display (ssd1306_width pixels por ssd1306_n_pages páginas)
-    *frame_area = (struct render_area) {
+    if (!custom_area) {
+        // Preparar área de renderização para o display (ssd1306_width pixels por ssd1306_n_pages páginas)
+        *frame_area = (struct render_area) {
         .start_column = 0,
         .end_column = ssd1306_width - 1,
         .start_page = 0,
         .end_page = ssd1306_n_pages - 1
     };
+    }
 
+    
     calculate_render_area_buffer_length(frame_area);
 
     // zera o display inteiro
