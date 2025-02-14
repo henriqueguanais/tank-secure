@@ -70,6 +70,7 @@ target_include_directories(tank-secure PUBLIC
         lib/buzzer
         lib/oled
         lib/thingspeak
+        lib/wifi
         )
 
 pico_add_extra_outputs(tank-secure)

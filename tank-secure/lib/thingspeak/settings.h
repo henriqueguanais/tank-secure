@@ -9,4 +9,6 @@
 #define THINGSPEAK_API_KEY "6SD0ONK8CO93PTWL"
 #define THINGSPEAK_URL "api.thingspeak.com"
 
+// Channel ID public: 2836789
+
 #endif

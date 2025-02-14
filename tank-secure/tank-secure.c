@@ -15,11 +15,14 @@
 
 #define LED_RED 13
 #define LED_GREEN 11
+#define BTN_PIN 5
 #define TEMPERATURE_SENSOR 4
 
 // Variáveis para o callback do timer
 static volatile bool tempo_esgotado = false;
 static volatile bool atualizar_leitura = false;
+static volatile bool exit_acess = false;
+
 volatile uint alarm_count = 0;
 
 // Variáveis para leitura dos sensores
@@ -30,17 +33,12 @@ uint temperatura = 0;
 int check_autentication(MFRC522Ptr_t mfrc, uint8_t *tag1, ssd1306_t *ssd_bm, datetime_t *t, datetime_t *alarm_time);
 static void alarm_callback(void);
 int read_onboard_temperature(void);
-int read_water_level(void);
+int read_tank_level(void);
 void init_wifi(void);
+void gpio_callback(uint gpio, uint32_t events);
 
 void main() {
     stdio_init_all();
-
-    // Tempo para exibir as mensagens
-    sleep_ms(3000);
-
-    // Se conecta ao Wi-Fi
-    init_wifi();
 
     gpio_init(LED_RED);
     gpio_init(LED_GREEN);
@@ -49,6 +47,10 @@ void main() {
     gpio_set_dir(LED_GREEN, GPIO_OUT);
 
     pwm_init_buzzer(BUZZER_PIN);
+
+    gpio_init(BTN_PIN);
+    gpio_set_dir(BTN_PIN, GPIO_IN);
+    gpio_pull_up(BTN_PIN);
 
     // Sensor de temperatura do raspberry pi pico w
     adc_init();
@@ -84,6 +86,7 @@ void main() {
     ssd1306_t ssd_bm;
     ssd1306_init_bm(&ssd_bm, 128, 64, true, 0x3C, i2c1);
     ssd1306_config(&ssd_bm);
+    ssd1306_draw_bitmap(&ssd_bm, connect_wifi);
     
     // Configura a área específica para atualização
     update_area.start_column = 88;
@@ -94,12 +97,17 @@ void main() {
 
     // Tag que está credenciada
     uint8_t tag1[] = {0xD3, 0x1C, 0xA9, 0xFA};
-    // Inicializa o módulo MFRC
+    // Módulo MFRC22
     MFRC522Ptr_t mfrc = MFRC522_Init();
-    PCD_Init(mfrc, spi0);
+
+    // Se conecta ao Wi-Fi
+    init_wifi();
 
     // Flag para verificar autenticação
     bool autenticado = false;
+
+    // Progama a interrupção do botão
+    gpio_set_irq_enabled_with_callback(BTN_PIN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
     while(true) {
         cyw43_arch_poll();  // Necessário para manter o Wi-Fi ativo
 
@@ -118,6 +126,7 @@ void main() {
             rtc_set_datetime(&t);
             rtc_set_alarm(&alarm_time, alarm_callback);
             alarm_count = 0;
+            tempo_esgotado = 0;
 
             // Menu de informações dos sensores
             ssd1306_draw_bitmap(&ssd_bm, info);
@@ -130,7 +139,7 @@ void main() {
                 // ler e enviar os dados dos sensores cada 5 segundos
                 if (atualizar_leitura) {
                     temperatura = read_onboard_temperature();
-                    nivel_reservatorio = read_water_level();
+                    nivel_reservatorio = read_tank_level();
 
                     // Atualiza no OLED os valores lidos
                     memset(ssd, 0, ssd1306_buffer_length);
@@ -146,15 +155,21 @@ void main() {
 
                     atualizar_leitura = false;
                 }
-                sleep_ms(1000);
+
+                if (exit_acess) {
+                    break;
+                }
             }
             tempo_esgotado = false;
+            exit_acess = false;
         }
     }
 }
 
 // Checa a autenticação do usuário, pelo módulo RFID
 int check_autentication(MFRC522Ptr_t mfrc, uint8_t *tag1, ssd1306_t *ssd_bm, datetime_t *t, datetime_t *alarm_time) {
+    // Inicializa o módulo RFID
+    PCD_Init(mfrc, spi0);
     // Flag para sair do modo alerta
     bool sair_alerta = false;
 
@@ -170,20 +185,22 @@ int check_autentication(MFRC522Ptr_t mfrc, uint8_t *tag1, ssd1306_t *ssd_bm, dat
         // Se o timer der 5 s, le os sensores 
         if (atualizar_leitura) {
             temperatura = read_onboard_temperature();
-            nivel_reservatorio = read_water_level();
+            nivel_reservatorio = read_tank_level();
             // Caso o nivel do reservatorio estiver abaixo de 15%, modo de alerta
             if (nivel_reservatorio < 15) {
                 ssd1306_draw_bitmap(ssd_bm, alerta);
                 sair_alerta = false;
+                PCD_Init(mfrc, spi0);
             }
             else if (!sair_alerta) {
                 ssd1306_draw_bitmap(ssd_bm, reservatorio);
                 sair_alerta = true;
+                PCD_Init(mfrc, spi0);
             }
             atualizar_leitura = false;
         }
         if (tempo_esgotado) {
-            // Envia os dados para o ThingSpeak
+            // Envia os dados para o ThingSpeak a cada 25 segundos
             send_data_to_thingspeak(nivel_reservatorio, "field1");
             send_data_to_thingspeak(temperatura, "field2");
             
@@ -193,7 +210,6 @@ int check_autentication(MFRC522Ptr_t mfrc, uint8_t *tag1, ssd1306_t *ssd_bm, dat
             tempo_esgotado = false;
         }
 
-        sleep_ms(500);
     }
     // Le o valor do cartão
     PICC_ReadCardSerial(mfrc);
@@ -208,6 +224,9 @@ int check_autentication(MFRC522Ptr_t mfrc, uint8_t *tag1, ssd1306_t *ssd_bm, dat
     if(memcmp(mfrc->uid.uidByte, tag1, 4) == 0) {
         printf("Authentication Success\n\r");
         printf("\n");
+
+        // Envia qual foi o usuário que entrou para o ThingSpeak
+        send_data_to_thingspeak(mfrc->uid.uidByte[0], "field3");
 
         // Exibe a confirmação no OLED, acende LED e ativa buzzer
         gpio_put(LED_RED, 0);
@@ -280,8 +299,8 @@ int read_onboard_temperature(void) {
     return (uint)tempC;
 }
 
-// Faz a leitura do sensor de nivel de agua (joystick)
-int read_water_level(void) {
+// Faz a leitura do sensor de nivel do tank(joystick)
+int read_tank_level(void) {
     adc_select_input(0);
 
     int level = adc_read();
@@ -310,4 +329,10 @@ void init_wifi(void) {
         printf("Falha ao conectar ao Wi-Fi\n");
     }
     printf("Wi-Fi conectado!\n");
+}
+
+void gpio_callback(uint gpio, uint32_t events) {
+    if (gpio == BTN_PIN) {
+        exit_acess = true;
+    }
 }
