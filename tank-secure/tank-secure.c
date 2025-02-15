@@ -1,11 +1,13 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
+#include "pico/multicore.h"
 
 #include "mfrc522.h"
 #include "buzzer.h"
 #include "ssd1306.h"
 #include "menu.h"
 #include "thingspeak.h"
+#include "wifi.h"
 
 #include "hardware/rtc.h"
 #include "hardware/adc.h"
@@ -34,12 +36,11 @@ int check_autentication(MFRC522Ptr_t mfrc, uint8_t *tag1, ssd1306_t *ssd_bm, dat
 static void alarm_callback(void);
 int read_onboard_temperature(void);
 int read_tank_level(void);
-void init_wifi(void);
 void gpio_callback(uint gpio, uint32_t events);
 
 void main() {
     stdio_init_all();
-
+    // Inicialização dos pinos
     gpio_init(LED_RED);
     gpio_init(LED_GREEN);
 
@@ -103,14 +104,15 @@ void main() {
     // Se conecta ao Wi-Fi
     init_wifi();
 
+    // Inicializa a thread para reconectar ao Wi-Fi
+    multicore_launch_core1(check_wifi_connection);
+
     // Flag para verificar autenticação
     bool autenticado = false;
 
     // Progama a interrupção do botão
     gpio_set_irq_enabled_with_callback(BTN_PIN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
     while(true) {
-        cyw43_arch_poll();  // Necessário para manter o Wi-Fi ativo
-
         // Desenha o menu principal
         ssd1306_config(&ssd_bm);
         ssd1306_draw_bitmap(&ssd_bm, reservatorio);
@@ -126,7 +128,8 @@ void main() {
             rtc_set_datetime(&t);
             rtc_set_alarm(&alarm_time, alarm_callback);
             alarm_count = 0;
-            tempo_esgotado = 0;
+            tempo_esgotado = false;
+            exit_acess = false;
 
             // Menu de informações dos sensores
             ssd1306_draw_bitmap(&ssd_bm, info);
@@ -135,6 +138,15 @@ void main() {
             // Buffers para os valores do reservatório e temperatura
             char reservatorio[4];
             char temp[4];
+            
+            // Atualiza no OLED os valores lidos
+            memset(ssd, 0, ssd1306_buffer_length);
+            snprintf(reservatorio, sizeof(reservatorio), "%d", nivel_reservatorio);
+            ssd1306_draw_string(ssd, 23, 0, reservatorio);
+            snprintf(temp, sizeof(temp), "%d", temperatura);
+            ssd1306_draw_string(ssd, 70, 0, temp);
+            render_on_display(ssd, &update_area);
+
             while (!tempo_esgotado) {
                 // ler e enviar os dados dos sensores cada 5 segundos
                 if (atualizar_leitura) {
@@ -149,10 +161,11 @@ void main() {
                     ssd1306_draw_string(ssd, 70, 0, temp);
                     render_on_display(ssd, &update_area);
 
-                    // Envia os dados para o ThingSpeak
-                    send_data_to_thingspeak(nivel_reservatorio, "field1");
-                    send_data_to_thingspeak(temperatura, "field2");
-
+                    if (!no_wifi){
+                        // Envia os dados para o ThingSpeak, se tiver wifi
+                        send_data_to_thingspeak(nivel_reservatorio, "field1");
+                        send_data_to_thingspeak(temperatura, "field2");
+                    }
                     atualizar_leitura = false;
                 }
 
@@ -200,9 +213,11 @@ int check_autentication(MFRC522Ptr_t mfrc, uint8_t *tag1, ssd1306_t *ssd_bm, dat
             atualizar_leitura = false;
         }
         if (tempo_esgotado) {
-            // Envia os dados para o ThingSpeak a cada 25 segundos
-            send_data_to_thingspeak(nivel_reservatorio, "field1");
-            send_data_to_thingspeak(temperatura, "field2");
+            if (!no_wifi) {
+                // Envia os dados para o ThingSpeak a cada 25 segundos, se tiver Wifi
+                send_data_to_thingspeak(nivel_reservatorio, "field1");
+                send_data_to_thingspeak(temperatura, "field2");
+            }
             
             // Reinicia o timer de 25 segundos
             rtc_set_datetime(t);
@@ -225,15 +240,17 @@ int check_autentication(MFRC522Ptr_t mfrc, uint8_t *tag1, ssd1306_t *ssd_bm, dat
         printf("Authentication Success\n\r");
         printf("\n");
 
-        // Envia qual foi o usuário que entrou para o ThingSpeak
-        send_data_to_thingspeak(mfrc->uid.uidByte[0], "field3");
-
         // Exibe a confirmação no OLED, acende LED e ativa buzzer
         gpio_put(LED_RED, 0);
         gpio_put(LED_GREEN, 1);
         
         ssd1306_draw_bitmap(ssd_bm, reservatorio_ok);
-    
+
+        if (!no_wifi) {
+            // Envia qual foi o usuário que entrou para o ThingSpeak
+            send_data_to_thingspeak(mfrc->uid.uidByte[0], "field3");
+        }
+        
         play_tone(BUZZER_PIN, 900, 100);
         sleep_ms(50);
         play_tone(BUZZER_PIN, 900, 100);
@@ -268,7 +285,7 @@ static void alarm_callback(void) {
     char *datetime_str = &datetime_buf[0];
 
     datetime_to_str(datetime_str, sizeof(datetime_buf), &t);
-    printf("Alarm tempo_esgotado At %s\n", datetime_str);
+    //printf("Alarm tempo_esgotado At %s\n", datetime_str);
     stdio_flush();
 
     // incrementa a cada 5 segundos
@@ -316,21 +333,7 @@ int read_tank_level(void) {
     return level;
 }
 
-void init_wifi(void) {
-    // Inicializa Wi-Fi
-    if (cyw43_arch_init()) {
-        printf("Falha ao iniciar Wi-Fi\n");
-    }
-    cyw43_arch_enable_sta_mode();
-
-    // Conectar ao Wi-Fi
-    printf("Conectando ao Wi-Fi...\n");
-    if (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASS, CYW43_AUTH_WPA2_AES_PSK, 10000)) {
-        printf("Falha ao conectar ao Wi-Fi\n");
-    }
-    printf("Wi-Fi conectado!\n");
-}
-
+// Função callback para a interrupção
 void gpio_callback(uint gpio, uint32_t events) {
     if (gpio == BTN_PIN) {
         exit_acess = true;
